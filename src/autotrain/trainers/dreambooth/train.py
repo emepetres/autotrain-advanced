@@ -29,7 +29,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import ProjectConfiguration, set_seed, is_xpu_available, is_ipex_available
 from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
@@ -88,17 +88,24 @@ def log_validation(
     # run inference
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
 
+    xpu_available = is_xpu_available() and is_ipex_available()
+    inference_ctx = ()
+    if xpu_available:
+        inference_ctx = (torch.xpu.amp.autocast())
+    else:
+        inference_ctx = (torch.cuda.amp.autocast())
+
     if args.validation_images is None:
         images = []
         for _ in range(args.num_validation_images):
-            with torch.cuda.amp.autocast():
+            with inference_ctx:
                 image = pipeline(**pipeline_args, generator=generator).images[0]
                 images.append(image)
     else:
         images = []
         for image in args.validation_images:
             image = Image.open(image)
-            with torch.cuda.amp.autocast():
+            with inference_ctx:
                 image = pipeline(**pipeline_args, image=image, generator=generator).images[0]
             images.append(image)
 
@@ -109,7 +116,12 @@ def log_validation(
             tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
 
     del pipeline
-    torch.cuda.empty_cache()
+    cuda_available = torch.cuda.is_available()
+    xpu_available = is_xpu_available() and is_ipex_available()
+    if cuda_available:
+        torch.cuda.empty_cache()
+    elif xpu_available:
+        torch.xpu.empty_cache()
 
     return images
 
@@ -378,7 +390,10 @@ def main(args):
         cur_class_images = len(list(class_images_dir.iterdir()))
 
         if cur_class_images < args.num_class_images:
-            torch_dtype = torch.float16 if accelerator.device.type == "cuda" else torch.float32
+            if is_xpu_available() and accelerator.device.type == "xpu":
+                torch_dtype = torch.bfloat16
+            else:
+                torch_dtype = torch.float16 if accelerator.device.type == "cuda" else torch.float32
             if args.prior_generation_precision == "fp32":
                 torch_dtype = torch.float32
             elif args.prior_generation_precision == "fp16":
@@ -414,8 +429,12 @@ def main(args):
                     image.save(image_filename)
 
             del pipeline
-            if torch.cuda.is_available():
+            cuda_available = torch.cuda.is_available()
+            xpu_available = is_xpu_available() and is_ipex_available()
+            if cuda_available:
                 torch.cuda.empty_cache()
+            elif xpu_available:
+                torch.xpu.empty_cache()
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -673,7 +692,12 @@ def main(args):
         tokenizer = None
 
         gc.collect()
-        torch.cuda.empty_cache()
+        cuda_available = torch.cuda.is_available()
+        xpu_available = is_xpu_available() and is_ipex_available()
+        if cuda_available:
+            torch.cuda.empty_cache()
+        elif xpu_available:
+            torch.xpu.empty_cache()
     else:
         pre_computed_encoder_hidden_states = None
         validation_prompt_encoder_hidden_states = None

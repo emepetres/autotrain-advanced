@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from huggingface_hub import repo_exists
 from nvitop import Device
+from accelerate.utils import is_xpu_available, is_ipex_available
 
 from autotrain import __version__, logger
 from autotrain.app.db import AutoTrainDB
@@ -674,9 +675,12 @@ async def available_accelerators(authenticated: bool = Depends(user_authenticati
     if AUTOTRAIN_LOCAL == 0:
         return {"accelerators": "Not available in cloud mode."}
     cuda_available = torch.cuda.is_available()
+    xpu_available = is_xpu_available() and is_ipex_available()
     mps_available = torch.backends.mps.is_available()
     if cuda_available:
         num_gpus = torch.cuda.device_count()
+    elif xpu_available:
+        num_gpus = torch.xpu.device_count()
     elif mps_available:
         num_gpus = 1
     else:
@@ -718,6 +722,7 @@ async def fetch_logs(authenticated: bool = Depends(user_authentication)):
     logs = [log for log in logs if "/ui/" not in log and "/static/" not in log and "nvidia-ml-py" not in log]
 
     cuda_available = torch.cuda.is_available()
+    xpu_available = is_xpu_available() and is_ipex_available()
     if cuda_available:
         devices = Device.all()
         device_logs = []

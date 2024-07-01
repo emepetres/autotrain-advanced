@@ -32,7 +32,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
-from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed, is_xpu_available, is_ipex_available
 from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
@@ -112,9 +112,14 @@ def log_validation(
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
     # Currently the context determination is a bit hand-wavy. We can improve it in the future if there's a better
     # way to condition it. Reference: https://github.com/huggingface/diffusers/pull/7126#issuecomment-1968523051
-    inference_ctx = (
-        contextlib.nullcontext() if "playground" in args.pretrained_model_name_or_path else torch.cuda.amp.autocast()
-    )
+    xpu_available = is_xpu_available() and is_ipex_available()
+    inference_ctx = ()
+    if "playground" in args.pretrained_model_name_or_path:
+        inference_ctx = (contextlib.nullcontext())
+    elif xpu_available:
+        inference_ctx = (torch.xpu.amp.autocast())
+    else:
+        inference_ctx = (torch.cuda.amp.autocast())
 
     with inference_ctx:
         images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
@@ -126,7 +131,12 @@ def log_validation(
             tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
 
     del pipeline
-    torch.cuda.empty_cache()
+    cuda_available = torch.cuda.is_available()
+    xpu_available = is_xpu_available() and is_ipex_available()
+    if cuda_available:
+        torch.cuda.empty_cache()
+    elif xpu_available:
+        torch.xpu.empty_cache()
 
     return images
 
@@ -416,7 +426,10 @@ def main(args):
         cur_class_images = len(list(class_images_dir.iterdir()))
 
         if cur_class_images < args.num_class_images:
-            torch_dtype = torch.float16 if accelerator.device.type == "cuda" else torch.float32
+            if is_xpu_available() and accelerator.device.type == "xpu":
+                torch_dtype = torch.bfloat16
+            else:
+                torch_dtype = torch.float16 if accelerator.device.type == "cuda" else torch.float32
             if args.prior_generation_precision == "fp32":
                 torch_dtype = torch.float32
             elif args.prior_generation_precision == "fp16":
@@ -451,8 +464,12 @@ def main(args):
                     image.save(image_filename)
 
             del pipeline
-            if torch.cuda.is_available():
+            cuda_available = torch.cuda.is_available()
+            xpu_available = is_xpu_available() and is_ipex_available()
+            if cuda_available:
                 torch.cuda.empty_cache()
+            elif xpu_available:
+                torch.xpu.empty_cache()
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -858,7 +875,12 @@ def main(args):
     if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
         del tokenizers, text_encoders
         gc.collect()
-        torch.cuda.empty_cache()
+        cuda_available = torch.cuda.is_available()
+        xpu_available = is_xpu_available() and is_ipex_available()
+        if cuda_available:
+            torch.cuda.empty_cache()
+        elif xpu_available:
+            torch.xpu.empty_cache()
 
     # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
     # pack the statically computed variables appropriately here. This is so that we don't
