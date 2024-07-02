@@ -732,6 +732,9 @@ async def fetch_logs(authenticated: bool = Depends(user_authentication)):
             )
         device_logs.append("-----------------")
         logs = device_logs + logs
+    elif xpu_available:
+        # TODO
+        pass
     return {"logs": logs}
 
 

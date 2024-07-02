@@ -36,6 +36,8 @@ The best way to run autotrain is in a conda environment. You can create a new co
 
 ### Intel XPU on Windows
 
+REF: https://github.com/huggingface/autotrain-advanced/pull/219/files
+
     conda create -n autotrain python=3.10
     conda activate autotrain
     pip install autotrain-advanced
